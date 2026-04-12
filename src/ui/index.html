@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Drop Chat — Agente de sincronización</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f8fafc; color: #1e293b; min-height: 100vh; }
+    .shell { display: flex; min-height: 100vh; }
+    .sidebar { width: 240px; background: #0f172a; color: #94a3b8; padding: 24px 0; flex-shrink: 0; }
+    .logo { padding: 0 20px 24px; border-bottom: 1px solid #1e293b; }
+    .logo-name { font-size: 16px; font-weight: 700; color: #f1f5f9; }
+    .logo-sub { font-size: 11px; color: #475569; margin-top: 2px; }
+    .nav { padding: 16px 12px; }
+    .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; font-size: 13px; cursor: pointer; color: #94a3b8; transition: all .15s; margin-bottom: 2px; }
+    .nav-item:hover { background: #1e293b; color: #e2e8f0; }
+    .nav-item.active { background: #1e3a5f; color: #60a5fa; }
+    .main { flex: 1; overflow-y: auto; }
+    .header { background: white; border-bottom: 1px solid #e2e8f0; padding: 16px 32px; display: flex; align-items: center; justify-content: space-between; }
+    .header h1 { font-size: 16px; font-weight: 600; }
+    .badge { padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .badge-green { background: #dcfce7; color: #16a34a; }
+    .badge-gray  { background: #f1f5f9; color: #64748b; }
+    .badge-amber { background: #fef3c7; color: #d97706; }
+    .content { padding: 32px; max-width: 720px; }
+    .card { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 24px; margin-bottom: 20px; }
+    .card-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+    .card-desc  { font-size: 13px; color: #64748b; margin-bottom: 20px; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 6px; }
+    input, select { width: 100%; padding: 9px 12px; border: 1px solid #d1d5db; border-radius: 10px; font-size: 14px; outline: none; transition: border .15s; }
+    input:focus, select:focus { border-color: #1077fd; box-shadow: 0 0 0 3px rgba(16,119,253,.1); }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .btn { padding: 9px 18px; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: all .15s; }
+    .btn-primary { background: #1077fd; color: white; }
+    .btn-primary:hover { background: #0060d4; }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-secondary { background: #f1f5f9; color: #374151; }
+    .btn-secondary:hover { background: #e2e8f0; }
+    .btn-danger { background: #fef2f2; color: #dc2626; }
+    .btn-danger:hover { background: #fee2e2; }
+    .btn-green { background: #dcfce7; color: #16a34a; }
+    .btn-green:hover { background: #bbf7d0; }
+    .actions { display: flex; gap: 10px; margin-top: 8px; }
+    .alert { padding: 12px 16px; border-radius: 10px; font-size: 13px; margin-top: 12px; }
+    .alert-success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+    .alert-error   { background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; }
+    .alert-info    { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+    .mono { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; background: #0f172a; color: #7dd3fc; padding: 12px 16px; border-radius: 10px; margin-top: 8px; }
+    .stat-row { display: flex; gap: 16px; margin-top: 12px; }
+    .stat { text-align: center; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 20px; flex: 1; }
+    .stat-val { font-size: 22px; font-weight: 700; color: #1077fd; }
+    .stat-label { font-size: 11px; color: #64748b; margin-top: 2px; }
+    .mapping-section { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; background: #f8fafc; }
+    .mapping-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; }
+    .mapping-key { width: 140px; color: #374151; font-weight: 500; flex-shrink: 0; }
+    .section { display: none; }
+    .section.active { display: block; }
+    .separator { border: none; border-top: 1px solid #e2e8f0; margin: 20px 0; }
+    .step-badge { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: #1077fd; color: white; font-size: 11px; font-weight: 700; margin-right: 8px; }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-name">Drop Chat</div>
+      <div class="logo-sub">Sync Agent v1.0</div>
+    </div>
+    <nav class="nav">
+      <div class="nav-item active" onclick="showSection('status')">
+        <span>📊</span> Estado
+      </div>
+      <div class="nav-item" onclick="showSection('db')">
+        <span>🗄️</span> Base de datos
+      </div>
+      <div class="nav-item" onclick="showSection('mapping')">
+        <span>🔀</span> Mapeo de campos
+      </div>
+      <div class="nav-item" onclick="showSection('mysql')">
+        <span>🐬</span> MySQL
+      </div>
+      <div class="nav-item" onclick="showSection('dropchat')">
+        <span>🔑</span> Drop Chat API
+      </div>
+      <div class="nav-item" onclick="showSection('schedule')">
+        <span>⏱</span> Frecuencia
+      </div>
+    </nav>
+  </aside>
+
+  <div class="main">
+    <div class="header">
+      <h1 id="section-title">Estado</h1>
+      <span id="status-badge" class="badge badge-gray">Cargando…</span>
+    </div>
+
+    <div class="content">
+
+      <!-- STATUS -->
+      <div id="section-status" class="section active">
+        <div class="card">
+          <div class="card-title">Resumen de sincronización</div>
+          <div class="card-desc">Controla el agente y ve los resultados del último sync.</div>
+          <div id="status-info" class="alert alert-info">Cargando estado…</div>
+          <div class="stat-row" id="stats-row" style="display:none">
+            <div class="stat"><div class="stat-val" id="stat-created">-</div><div class="stat-label">Nuevos</div></div>
+            <div class="stat"><div class="stat-val" id="stat-updated">-</div><div class="stat-label">Actualizados</div></div>
+            <div class="stat"><div class="stat-val" id="stat-skipped">-</div><div class="stat-label">Omitidos</div></div>
+            <div class="stat"><div class="stat-val" id="stat-total">-</div><div class="stat-label">Total</div></div>
+          </div>
+          <div class="actions" style="margin-top:20px">
+            <button class="btn btn-primary" id="btn-start" onclick="startStop('start')">▶ Iniciar sincronización</button>
+            <button class="btn btn-danger" id="btn-stop" style="display:none" onclick="startStop('stop')">⏹ Detener</button>
+            <button class="btn btn-secondary" onclick="syncNow()">↺ Sync ahora</button>
+          </div>
+          <div id="sync-result" style="margin-top:12px"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Cómo funciona</div>
+          <p style="font-size:13px;color:#64748b;line-height:1.6">
+            Este agente corre en <strong>tu propio computador o servidor</strong>. Lee los contactos de tu base de datos usando tus credenciales locales — estas <strong>nunca se envían a Drop Chat</strong>. Solo se envían los campos de contacto (nombre, teléfono, email, acciones clave) al API de Drop Chat usando tu API key.
+          </p>
+        </div>
+      </div>
+
+      <!-- DB -->
+      <div id="section-db" class="section">
+        <div class="card">
+          <div class="card-title"><span class="step-badge">1</span> Conectar base de datos</div>
+          <div class="card-desc">Ingresa los datos de conexión. Solo se usan en esta máquina.</div>
+
+          <div class="form-group">
+            <label>Tipo de base de datos</label>
+            <select id="db-type">
+              <option value="postgres">PostgreSQL</option>
+              <option value="mysql" disabled>MySQL (próximamente)</option>
+            </select>
+          </div>
+          <div class="grid-2">
+            <div class="form-group">
+              <label>Host</label>
+              <input id="db-host" type="text" placeholder="localhost" />
+            </div>
+            <div class="form-group">
+              <label>Puerto</label>
+              <input id="db-port" type="number" value="5432" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Base de datos</label>
+            <input id="db-name" type="text" placeholder="mi_empresa_db" />
+          </div>
+          <div class="grid-2">
+            <div class="form-group">
+              <label>Usuario</label>
+              <input id="db-user" type="text" placeholder="readonly_user" />
+            </div>
+            <div class="form-group">
+              <label>Contraseña</label>
+              <input id="db-pass" type="password" placeholder="••••••••" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label><input type="checkbox" id="db-ssl" style="width:auto;margin-right:6px" /> Usar SSL</label>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" onclick="testConnection()">Probar conexión</button>
+          </div>
+          <div id="conn-result" style="margin-top:12px"></div>
+
+          <hr class="separator" />
+
+          <div class="form-group">
+            <label>Tabla de contactos</label>
+            <select id="db-table">
+              <option value="">— Probar conexión primero —</option>
+            </select>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" onclick="saveDb()">Guardar y continuar →</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- MAPPING -->
+      <div id="section-mapping" class="section">
+        <div class="card">
+          <div class="card-title"><span class="step-badge">2</span> Mapeo de columnas</div>
+          <div class="card-desc">Indica qué columna de tu tabla corresponde a cada campo de Drop Chat.</div>
+          <div id="cols-loading" class="alert alert-info" style="display:none">Cargando columnas…</div>
+          <div class="mapping-section" id="mapping-form">
+
+            <p style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">Identificación</p>
+            <div class="mapping-row">
+              <div class="mapping-key">📞 Teléfono *</div>
+              <select id="map-phone" style="flex:1"></select>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-key">👤 Nombre</div>
+              <select id="map-name" style="flex:1"></select>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-key">📧 Email</div>
+              <select id="map-email" style="flex:1"></select>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-key">📱 Canal</div>
+              <select id="map-channel" style="flex:1"></select>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-key">📅 Fecha de registro</div>
+              <select id="map-registered" style="flex:1"></select>
+            </div>
+
+            <p style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 10px">Funnel — clasificación automática</p>
+            <div class="mapping-row">
+              <div class="mapping-key">🎯 Acciones clave</div>
+              <select id="map-action-count" style="flex:1"></select>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-key">⏱ Última acción</div>
+              <select id="map-action-last" style="flex:1"></select>
+            </div>
+
+            <p style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 10px">Segmentación</p>
+            <div class="mapping-row">
+              <div class="mapping-key">🏷 Segmento</div>
+              <select id="map-segment" style="flex:1"></select>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-key">⭐ Clasificación</div>
+              <select id="map-classification" style="flex:1"></select>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-key">💰 Valor cliente (LTV)</div>
+              <select id="map-ltv" style="flex:1"></select>
+            </div>
+
+          </div>
+          <p style="font-size:12px;color:#64748b;margin-top:12px">💡 <strong>Acciones clave</strong> es el campo más importante — define la fase del funnel (Nuevo, Activado, Recurrente…). Puede ser: compras, pedidos, visitas, transacciones.</p>
+          <div class="actions" style="margin-top:16px">
+            <button class="btn btn-primary" onclick="saveMapping()">Guardar mapeo →</button>
+          </div>
+          <div id="mapping-result" style="margin-top:12px"></div>
+        </div>
+      </div>
+
+      <!-- MYSQL -->
+      <div id="section-mysql" class="section">
+        <div class="card">
+          <div class="card-title">🐬 Sincronización desde MySQL</div>
+          <div class="card-desc">Conecta tu base de datos MySQL. Las credenciales nunca salen de esta máquina.</div>
+
+          <div class="grid-2">
+            <div class="form-group">
+              <label>Host</label>
+              <input id="my-host" type="text" placeholder="localhost o db.empresa.com" />
+            </div>
+            <div class="form-group">
+              <label>Puerto</label>
+              <input id="my-port" type="number" value="3306" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Base de datos</label>
+            <input id="my-database" type="text" placeholder="mi_empresa_db" />
+          </div>
+          <div class="grid-2">
+            <div class="form-group">
+              <label>Usuario</label>
+              <input id="my-user" type="text" placeholder="readonly_user" />
+            </div>
+            <div class="form-group">
+              <label>Contraseña <span id="my-pass-toggle" style="font-weight:400;color:#1077fd;cursor:pointer;font-size:11px" onclick="toggleMyPass()">mostrar</span></label>
+              <input id="my-pass" type="password" placeholder="••••••••" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Query SQL <span style="font-weight:400;color:#64748b">(selecciona los campos que necesitas)</span></label>
+            <textarea id="my-query" rows="4"
+              style="width:100%;padding:9px 12px;border:1px solid #d1d5db;border-radius:10px;font-size:13px;font-family:SF Mono,Consolas,monospace;resize:vertical;outline:none"
+              placeholder="SELECT nombre, telefono, email, total_ordenes, ultima_compra&#10;FROM clientes&#10;WHERE activo = 1"></textarea>
+          </div>
+
+          <div class="grid-2">
+            <div class="form-group">
+              <label>Columna teléfono *</label>
+              <input id="my-phone-col" type="text" placeholder="telefono" />
+            </div>
+            <div class="form-group">
+              <label>Columna nombre</label>
+              <input id="my-name-col" type="text" placeholder="nombre" />
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="form-group">
+              <label>Columna email</label>
+              <input id="my-email-col" type="text" placeholder="email" />
+            </div>
+            <div class="form-group">
+              <label>Columna acciones clave <span style="font-weight:400;color:#64748b">(opcional)</span></label>
+              <input id="my-action-col" type="text" placeholder="total_ordenes" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Columna fecha última acción <span style="font-weight:400;color:#64748b">(opcional)</span></label>
+            <input id="my-date-col" type="text" placeholder="ultima_compra" />
+          </div>
+
+          <div class="actions">
+            <button class="btn btn-secondary" onclick="mysqlTest()">Probar conexión</button>
+            <button class="btn btn-secondary" onclick="mysqlPreview()">Vista previa (5 filas)</button>
+            <button class="btn btn-primary" onclick="mysqlRun()">▶ Sincronizar ahora</button>
+          </div>
+          <div id="mysql-result" style="margin-top:12px"></div>
+          <div id="mysql-preview-table" style="margin-top:12px;overflow-x:auto"></div>
+        </div>
+      </div>
+
+      <!-- DROPCHAT -->
+      <div id="section-dropchat" class="section">
+        <div class="card">
+          <div class="card-title"><span class="step-badge">3</span> Drop Chat API Key</div>
+          <div class="card-desc">Ve a Drop Chat → Configuración → API Keys y copia tu clave.</div>
+          <div class="form-group">
+            <label>API Key</label>
+            <input id="dc-apikey" type="password" placeholder="omni_xxxxxxxx" />
+          </div>
+          <div class="form-group">
+            <label>URL del API (solo cambiar si es instancia propia)</label>
+            <input id="dc-url" type="text" placeholder="https://omni-platform-api-production.up.railway.app/api/v1" />
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" onclick="saveDcConfig()">Guardar →</button>
+          </div>
+          <div id="dc-result" style="margin-top:12px"></div>
+        </div>
+      </div>
+
+      <!-- SCHEDULE -->
+      <div id="section-schedule" class="section">
+        <div class="card">
+          <div class="card-title"><span class="step-badge">4</span> Frecuencia de sincronización</div>
+          <div class="card-desc">¿Con qué frecuencia quieres que el agente sincronice los contactos?</div>
+          <div class="form-group">
+            <label>Cada cuánto tiempo</label>
+            <select id="interval">
+              <option value="15">Cada 15 minutos</option>
+              <option value="30">Cada 30 minutos</option>
+              <option value="60" selected>Cada hora</option>
+              <option value="360">Cada 6 horas</option>
+              <option value="1440">Una vez al día</option>
+            </select>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" onclick="saveSchedule()">Guardar frecuencia</button>
+          </div>
+          <div id="schedule-result" style="margin-top:12px"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+let columns = [];
+let status  = {};
+
+async function api(method, path, body) {
+  const r = await fetch('/api' + path, {
+    method, headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  return r.json();
+}
+
+const NAV_SECTIONS = ['status','db','mapping','mysql','dropchat','schedule'];
+const NAV_TITLES   = {
+  status:'Estado', db:'Base de datos', mapping:'Mapeo de campos',
+  mysql:'MySQL', dropchat:'Drop Chat API', schedule:'Frecuencia'
+};
+
+function showSection(id) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('section-' + id).classList.add('active');
+  const idx = NAV_SECTIONS.indexOf(id);
+  if (idx >= 0) document.querySelectorAll('.nav-item')[idx].classList.add('active');
+  document.getElementById('section-title').textContent = NAV_TITLES[id] ?? id;
+  if (id === 'mapping') loadColumns();
+}
+
+async function loadStatus() {
+  status = await api('GET', '/status');
+  const badge = document.getElementById('status-badge');
+  const info  = document.getElementById('status-info');
+
+  if (status.running) {
+    badge.className = 'badge badge-green';
+    badge.textContent = '● Sincronizando';
+    document.getElementById('btn-start').style.display = 'none';
+    document.getElementById('btn-stop').style.display = '';
+  } else {
+    badge.className = status.configured ? 'badge badge-amber' : 'badge badge-gray';
+    badge.textContent = status.configured ? '⏸ Pausado' : '⚙ Sin configurar';
+    document.getElementById('btn-start').style.display = '';
+    document.getElementById('btn-stop').style.display = 'none';
+  }
+
+  if (!status.configured) {
+    info.className = 'alert alert-info';
+    info.textContent = '⚙ Completa los pasos: Base de datos → Mapeo → API Key → Frecuencia, luego pulsa Iniciar.';
+  } else if (status.last_sync_at) {
+    info.className = 'alert alert-success';
+    info.innerHTML = `✅ Último sync: <strong>${new Date(status.last_sync_at).toLocaleString('es-PE')}</strong>`;
+  } else {
+    info.className = 'alert alert-info';
+    info.textContent = '✅ Configurado. Listo para sincronizar.';
+  }
+
+  if (status.last_result && !status.last_result.error) {
+    const r = status.last_result;
+    document.getElementById('stats-row').style.display = '';
+    document.getElementById('stat-created').textContent = r.created ?? '-';
+    document.getElementById('stat-updated').textContent = r.updated ?? '-';
+    document.getElementById('stat-skipped').textContent = r.skipped ?? '-';
+    document.getElementById('stat-total').textContent   = r.total   ?? '-';
+  }
+
+  // Pre-fill forms
+  if (status.db) {
+    document.getElementById('db-host').value = status.db.host || '';
+    document.getElementById('db-port').value = status.db.port || 5432;
+    document.getElementById('db-name').value = status.db.database || '';
+    document.getElementById('db-user').value = status.db.user || '';
+    document.getElementById('db-ssl').checked = status.db.ssl || false;
+  }
+  if (status.api_key) document.getElementById('dc-apikey').value = status.api_key;
+  if (status.api_url) document.getElementById('dc-url').value = status.api_url;
+  if (status.interval) document.getElementById('interval').value = status.interval;
+}
+
+async function testConnection() {
+  const cfg = getDbConfig();
+  const res = document.getElementById('conn-result');
+  res.className = 'alert alert-info'; res.textContent = 'Probando conexión…';
+  const r = await api('POST', '/test-connection', cfg);
+  if (r.ok) {
+    res.className = 'alert alert-success';
+    res.textContent = '✅ Conexión exitosa!';
+    const sel = document.getElementById('db-table');
+    sel.innerHTML = '<option value="">— Elige una tabla —</option>' +
+      r.tables.map(t => `<option value="${t}">${t}</option>`).join('');
+    if (status.table) sel.value = status.table;
+  } else {
+    res.className = 'alert alert-error';
+    res.textContent = '❌ Error: ' + r.error;
+  }
+}
+
+function getDbConfig() {
+  return {
+    host: document.getElementById('db-host').value,
+    port: parseInt(document.getElementById('db-port').value) || 5432,
+    database: document.getElementById('db-name').value,
+    user: document.getElementById('db-user').value,
+    password: document.getElementById('db-pass').value,
+    ssl: document.getElementById('db-ssl').checked,
+  };
+}
+
+async function saveDb() {
+  const cfg   = getDbConfig();
+  const table = document.getElementById('db-table').value;
+  if (!table) { alert('Elige una tabla'); return; }
+  await api('POST', '/config', { db: cfg, table });
+  status.db    = { ...cfg, password: '••••••••' };
+  status.table = table;
+  showSection('mapping');
+}
+
+async function loadColumns() {
+  if (!status.db || !status.table) return;
+  document.getElementById('cols-loading').style.display = '';
+  const r = await api('POST', '/columns', { db: status.db, table: status.table });
+  document.getElementById('cols-loading').style.display = 'none';
+  columns = r.columns || [];
+  const OPTIONAL = '<option value="">— No mapear —</option>';
+  const optionalIds = ['name','email','channel','registered','action-count','action-last','segment','classification','ltv'];
+  optionalIds.forEach(id => {
+    document.getElementById('map-' + id).innerHTML = OPTIONAL +
+      columns.map(c => `<option value="${c}">${c}</option>`).join('');
+  });
+  document.getElementById('map-phone').innerHTML =
+    columns.map(c => `<option value="${c}">${c}</option>`).join('');
+  // Pre-fill from saved mapping
+  const m = status.mapping;
+  if (m) {
+    if (m.phone)               document.getElementById('map-phone').value          = m.phone;
+    if (m.name)                document.getElementById('map-name').value           = m.name;
+    if (m.email)               document.getElementById('map-email').value          = m.email;
+    if (m.channel)             document.getElementById('map-channel').value        = m.channel;
+    if (m.registered_at)       document.getElementById('map-registered').value     = m.registered_at;
+    if (m.action_key_count)    document.getElementById('map-action-count').value   = m.action_key_count;
+    if (m.action_key_last_at)  document.getElementById('map-action-last').value    = m.action_key_last_at;
+    if (m.segment_name)        document.getElementById('map-segment').value        = m.segment_name;
+    if (m.classification)      document.getElementById('map-classification').value = m.classification;
+    if (m.ltv)                 document.getElementById('map-ltv').value            = m.ltv;
+  }
+}
+
+async function saveMapping() {
+  const val = id => document.getElementById(id).value || undefined;
+  const mapping = {
+    phone:               document.getElementById('map-phone').value,
+    name:                val('map-name'),
+    email:               val('map-email'),
+    channel:             val('map-channel'),
+    registered_at:       val('map-registered'),
+    action_key_count:    val('map-action-count'),
+    action_key_last_at:  val('map-action-last'),
+    segment_name:        val('map-segment'),
+    classification:      val('map-classification'),
+    ltv:                 val('map-ltv'),
+  };
+  if (!mapping.phone) { alert('El teléfono es obligatorio'); return; }
+  await api('POST', '/config', { mapping });
+  status.mapping = mapping;
+  document.getElementById('mapping-result').className = 'alert alert-success';
+  document.getElementById('mapping-result').textContent = '✅ Mapeo guardado';
+  setTimeout(() => showSection('dropchat'), 800);
+}
+
+async function saveDcConfig() {
+  const api_key = document.getElementById('dc-apikey').value.trim();
+  const api_url = document.getElementById('dc-url').value.trim() ||
+    'https://omni-platform-api-production.up.railway.app/api/v1';
+  if (!api_key) { alert('La API key es obligatoria'); return; }
+  await api('POST', '/config', { api_key, api_url });
+  status.api_key = api_key;
+  document.getElementById('dc-result').className = 'alert alert-success';
+  document.getElementById('dc-result').textContent = '✅ API Key guardada';
+  setTimeout(() => showSection('schedule'), 800);
+}
+
+async function saveSchedule() {
+  const interval = parseInt(document.getElementById('interval').value);
+  await api('POST', '/config', { interval });
+  document.getElementById('schedule-result').className = 'alert alert-success';
+  document.getElementById('schedule-result').textContent = '✅ Frecuencia guardada. Ve a Estado e inicia la sincronización.';
+  setTimeout(() => showSection('status'), 1200);
+}
+
+async function startStop(action) {
+  await api('POST', '/' + action);
+  await loadStatus();
+}
+
+async function syncNow() {
+  const el = document.getElementById('sync-result');
+  el.className = 'alert alert-info'; el.textContent = 'Sincronizando…';
+  const r = await api('POST', '/sync-now');
+  if (r.error) {
+    el.className = 'alert alert-error';
+    el.textContent = '❌ ' + r.error;
+  } else {
+    el.className = 'alert alert-success';
+    el.textContent = `✅ ${r.message || 'Sync completado'} · ${r.created} nuevos · ${r.updated} actualizados`;
+    await loadStatus();
+  }
+}
+
+// ── MySQL helpers ─────────────────────────────────────────────
+function getMySQLCfg() {
+  return {
+    host:               document.getElementById('my-host').value.trim(),
+    port:               parseInt(document.getElementById('my-port').value) || 3306,
+    user:               document.getElementById('my-user').value.trim(),
+    password:           document.getElementById('my-pass').value,
+    database:           document.getElementById('my-database').value.trim(),
+    query:              document.getElementById('my-query').value.trim(),
+    phone_column:       document.getElementById('my-phone-col').value.trim(),
+    name_column:        document.getElementById('my-name-col').value.trim() || undefined,
+    email_column:       document.getElementById('my-email-col').value.trim() || undefined,
+    action_column:      document.getElementById('my-action-col').value.trim() || undefined,
+    action_date_column: document.getElementById('my-date-col').value.trim() || undefined,
+  };
+}
+
+function setMySQLResult(html, cls = 'alert-info') {
+  const el = document.getElementById('mysql-result');
+  el.className = 'alert ' + cls;
+  el.innerHTML = html;
+}
+
+function toggleMyPass() {
+  const inp = document.getElementById('my-pass');
+  const lbl = document.getElementById('my-pass-toggle');
+  if (inp.type === 'password') { inp.type = 'text'; lbl.textContent = 'ocultar'; }
+  else { inp.type = 'password'; lbl.textContent = 'mostrar'; }
+}
+
+async function mysqlTest() {
+  const cfg = getMySQLCfg();
+  if (!cfg.host || !cfg.user || !cfg.database) { alert('Host, usuario y base de datos son requeridos'); return; }
+  setMySQLResult('Probando conexión…');
+  const r = await api('POST', '/mysql/test', cfg);
+  if (r.ok) {
+    setMySQLResult(`✅ Conexión exitosa · ${r.latency_ms}ms`, 'alert-success');
+  } else {
+    setMySQLResult('❌ ' + r.error, 'alert-error');
+  }
+}
+
+async function mysqlPreview() {
+  const cfg = getMySQLCfg();
+  if (!cfg.query || !cfg.phone_column) { alert('Query y columna de teléfono son requeridos'); return; }
+  setMySQLResult('Ejecutando preview…');
+  const r = await api('POST', '/mysql/preview', { ...cfg, limit: 5 });
+  if (r.error) { setMySQLResult('❌ ' + r.error, 'alert-error'); return; }
+
+  setMySQLResult(`✅ ${r.total_estimated} contactos estimados. Vista previa de ${r.rows.length} filas:`, 'alert-success');
+
+  const keys = r.rows.length ? Object.keys(r.rows[0]).filter(k => r.rows[0][k] != null) : [];
+  const tableHtml = `
+    <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px">
+      <thead><tr style="background:#f1f5f9">${keys.map(k => `<th style="padding:6px 10px;text-align:left;border:1px solid #e2e8f0">${k}</th>`).join('')}</tr></thead>
+      <tbody>${r.rows.map(row => `<tr>${keys.map(k => `<td style="padding:6px 10px;border:1px solid #e2e8f0">${row[k] ?? ''}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table>`;
+  document.getElementById('mysql-preview-table').innerHTML = tableHtml;
+}
+
+async function mysqlRun() {
+  const cfg    = getMySQLCfg();
+  const apiKey = document.getElementById('dc-apikey').value.trim() || status.api_key;
+  const apiUrl = document.getElementById('dc-url').value.trim() || status.api_url;
+  if (!cfg.query || !cfg.phone_column) { alert('Completa la query y columna de teléfono'); return; }
+  if (!apiKey) { alert('Configura la API Key en la sección "Drop Chat API" primero'); return; }
+  setMySQLResult('⏳ Sincronizando contactos desde MySQL…');
+  const r = await api('POST', '/mysql/run', { ...cfg, api_key: apiKey, api_url: apiUrl });
+  if (r.error) {
+    setMySQLResult('❌ ' + r.error, 'alert-error');
+  } else {
+    setMySQLResult(
+      `✅ Sync completado · <strong>${r.created}</strong> nuevos · <strong>${r.updated}</strong> actualizados · ${r.skipped} omitidos · Total: ${r.total}`,
+      'alert-success'
+    );
+  }
+}
+
+// Init
+loadStatus();
+setInterval(loadStatus, 10000);
+</script>
+</body>
+</html>
