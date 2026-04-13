@@ -10,6 +10,7 @@
 
 import express        from 'express';
 import path           from 'path';
+import fs             from 'fs';
 import axios          from 'axios';
 import { exec }       from 'child_process';
 import { Pool }       from 'pg';
@@ -88,7 +89,8 @@ async function runSetup() {
     const mapping: ColumnMapping = { phone };
     if (name) mapping.name = name;
     if (email) mapping.email = email;
-    const rows = await fetchRows(p, table, mapping, 3);
+    const allRows = await fetchRows(p, table, mapping);
+    const rows = allRows.slice(0, 3);
     console.log(`  📋 Preview (${rows.length} filas):`);
     rows.forEach((r, i) => console.log(`     ${i + 1}. ${r.name ?? '—'} | ${r.phone} | ${r.email ?? '—'}`));
     await p.end();
@@ -128,8 +130,6 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'ui')));
 
 // ── In-memory config (persisted to config.json on disk) ───────
-import fs from 'fs';
-
 const CONFIG_FILE = path.join(process.cwd(), 'dropchat-agent-config.json');
 let config: {
   db?:       DbConfig;
