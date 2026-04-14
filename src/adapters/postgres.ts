@@ -53,6 +53,11 @@ export interface ContactRow {
   channel?:           string;
   action_key_count?:  number;
   action_key_last_at?: string;
+  registered_at?:     string;
+  segment_name?:      string;
+  classification?:    string;
+  ltv?:               number;
+  custom_fields?:     Record<string, any>;
   [key: string]: any;
 }
 

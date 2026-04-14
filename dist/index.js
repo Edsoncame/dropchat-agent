@@ -79,16 +79,34 @@ async function runSetup() {
     }
     const dbType = flags['db-type'] ?? '';
     const table = flags['table'] ?? '';
+    // Básicos
     const phone = flags['phone'] ?? '';
     const name = flags['name'] ?? '';
     const email = flags['email'] ?? '';
+    // Funnel
+    const actionCount = flags['action-count'] ?? '';
+    const actionLastAt = flags['action-last-at'] ?? '';
+    const registeredAt = flags['registered-at'] ?? '';
+    // Segmentación
+    const segment = flags['segment'] ?? '';
+    const classification = flags['classification'] ?? '';
+    const ltv = flags['ltv'] ?? '';
+    // Drop Chat credentials
     const apiKey = flags['api-key'] ?? '';
     const tenantId = flags['tenant-id'] ?? '';
     console.log('\n  ╔══════════════════════════════════════╗');
     console.log('  ║   Drop Chat Sync Agent — Setup       ║');
     console.log('  ╚══════════════════════════════════════╝\n');
     console.log(`  BD: ${dbType || 'no especificada'} | Tabla: ${table || 'no especificada'}`);
-    console.log(`  Mapeo: phone=${phone}, name=${name}, email=${email}\n`);
+    console.log('  Mapeo de columnas:');
+    console.log(`    phone=${phone}${name ? `, name=${name}` : ''}${email ? `, email=${email}` : ''}`);
+    if (actionCount || actionLastAt || registeredAt) {
+        console.log(`    funnel: action_count=${actionCount || '—'}, action_last_at=${actionLastAt || '—'}, registered_at=${registeredAt || '—'}`);
+    }
+    if (segment || classification || ltv) {
+        console.log(`    segment=${segment || '—'}, classification=${classification || '—'}, ltv=${ltv || '—'}`);
+    }
+    console.log();
     // ── Validar identificadores antes de seguir (anti SQLi) ──────
     try {
         (0, postgres_1.validateIdentifier)(table, 'tabla');
@@ -97,6 +115,18 @@ async function runSetup() {
             (0, postgres_1.validateIdentifier)(name, 'columna name');
         if (email)
             (0, postgres_1.validateIdentifier)(email, 'columna email');
+        if (actionCount)
+            (0, postgres_1.validateIdentifier)(actionCount, 'columna action_key_count');
+        if (actionLastAt)
+            (0, postgres_1.validateIdentifier)(actionLastAt, 'columna action_key_last_at');
+        if (registeredAt)
+            (0, postgres_1.validateIdentifier)(registeredAt, 'columna registered_at');
+        if (segment)
+            (0, postgres_1.validateIdentifier)(segment, 'columna segment_name');
+        if (classification)
+            (0, postgres_1.validateIdentifier)(classification, 'columna classification');
+        if (ltv)
+            (0, postgres_1.validateIdentifier)(ltv, 'columna ltv');
     }
     catch (e) {
         console.error(`\n  ❌ ${e.message}`);
@@ -148,19 +178,42 @@ async function runSetup() {
         }
     }
     console.log('  ✅ Conexión exitosa!\n');
+    // Construir mapping completo
+    const mapping = { phone };
+    if (name)
+        mapping.name = name;
+    if (email)
+        mapping.email = email;
+    if (actionCount)
+        mapping.action_key_count = actionCount;
+    if (actionLastAt)
+        mapping.action_key_last_at = actionLastAt;
+    if (registeredAt)
+        mapping.registered_at = registeredAt;
+    if (segment)
+        mapping.segment_name = segment;
+    if (classification)
+        mapping.classification = classification;
+    if (ltv)
+        mapping.ltv = ltv;
     // Preview
     console.log('  ⏳ Obteniendo preview...');
     try {
         const p = (0, postgres_1.createPool)(dbConfig);
-        const mapping = { phone };
-        if (name)
-            mapping.name = name;
-        if (email)
-            mapping.email = email;
         const allRows = await (0, postgres_1.fetchRows)(p, table, mapping);
         const rows = allRows.slice(0, 3);
         console.log(`  📋 Preview (${rows.length} filas):`);
-        rows.forEach((r, i) => console.log(`     ${i + 1}. ${r.name ?? '—'} | ${r.phone} | ${r.email ?? '—'}`));
+        rows.forEach((r, i) => {
+            const extras = [];
+            if (r.segment_name)
+                extras.push(`seg=${r.segment_name}`);
+            if (r.action_key_count != null)
+                extras.push(`count=${r.action_key_count}`);
+            if (r.ltv != null)
+                extras.push(`ltv=${r.ltv}`);
+            const extraStr = extras.length ? ` (${extras.join(', ')})` : '';
+            console.log(`     ${i + 1}. ${r.name ?? '—'} | ${r.phone} | ${r.email ?? '—'}${extraStr}`);
+        });
         await p.end();
     }
     catch (e) {
@@ -173,7 +226,7 @@ async function runSetup() {
         db: dbConfig,
         db_type: dbType || 'postgres',
         table,
-        mapping: { phone, ...(name ? { name } : {}), ...(email ? { email } : {}) },
+        mapping,
         api_key: apiKey,
         api_url: 'https://omni-platform-api-production.up.railway.app/api/v1',
         interval: 15,
