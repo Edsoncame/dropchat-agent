@@ -1,17 +1,26 @@
 import mysql from 'mysql2/promise';
+import { validateIdentifier } from './postgres';
 
+/**
+ * Config para MySQL. **NO permitimos query SQL arbitraria** — solo
+ * tabla + columnas mapeadas. Esto previene SQL injection y mantiene
+ * paridad de seguridad con el adapter de Postgres.
+ */
 export interface MySQLConfig {
   host:               string;
   port:               number;
   user:               string;
   password:           string;
   database:           string;
-  query:              string;  // SQL que devuelve los contactos
+  table:              string;     // tabla destino
   phone_column:       string;
   name_column?:       string;
   email_column?:      string;
-  action_column?:     string;  // count de acciones clave
-  action_date_column?: string; // fecha última acción
+  action_column?:     string;     // count de acciones clave
+  action_date_column?: string;    // fecha última acción
+  /** @deprecated SQL libre — solo aceptado si se ejecuta vía un script
+   *  controlado por el operador local del agente, NUNCA desde requests del UI. */
+  query?:             string;
 }
 
 export interface SyncContact {
@@ -20,6 +29,32 @@ export interface SyncContact {
   email?:            string;
   action_key_count?: number;
   action_key_last_at?: string;
+}
+
+/** Quoting de identificadores para MySQL: usa backticks y escapa los internos. */
+function quoteMyIdent(name: string): string {
+  validateIdentifier(name, 'identifier');
+  return name.split('.').map(p => '`' + p.replace(/`/g, '``') + '`').join('.');
+}
+
+/** Construye un SELECT seguro a partir de tabla + columnas validadas. */
+function buildSafeSelect(cfg: MySQLConfig, limit?: number): string {
+  validateIdentifier(cfg.table, 'tabla');
+  validateIdentifier(cfg.phone_column, 'phone_column');
+
+  const cols: string[] = [quoteMyIdent(cfg.phone_column)];
+  if (cfg.name_column)         { validateIdentifier(cfg.name_column,         'name_column');         cols.push(quoteMyIdent(cfg.name_column)); }
+  if (cfg.email_column)        { validateIdentifier(cfg.email_column,        'email_column');        cols.push(quoteMyIdent(cfg.email_column)); }
+  if (cfg.action_column)       { validateIdentifier(cfg.action_column,       'action_column');       cols.push(quoteMyIdent(cfg.action_column)); }
+  if (cfg.action_date_column)  { validateIdentifier(cfg.action_date_column,  'action_date_column');  cols.push(quoteMyIdent(cfg.action_date_column)); }
+
+  let sql = `SELECT ${cols.join(', ')} FROM ${quoteMyIdent(cfg.table)}`;
+  if (limit && Number.isInteger(limit) && limit > 0 && limit <= 10000) {
+    sql += ` LIMIT ${limit}`;
+  } else {
+    sql += ` LIMIT 500`;
+  }
+  return sql;
 }
 
 export async function testMySQLConnection(cfg: MySQLConfig): Promise<{ ok: boolean; error?: string; latency_ms?: number }> {
@@ -49,14 +84,14 @@ export async function previewMySQLQuery(cfg: MySQLConfig, limit = 5): Promise<{ 
     user: cfg.user, password: cfg.password, database: cfg.database,
   });
   try {
-    // Preview query with LIMIT
-    const limitedQuery = wrapLimit(cfg.query, limit);
-    const [rows] = await conn.execute(limitedQuery) as [any[], any];
+    const sql = buildSafeSelect(cfg, limit);
+    const [rows] = await conn.execute(sql) as [any[], any];
 
-    // Estimate total (run COUNT wrapper)
+    // Estimate total con COUNT sobre la tabla validada
     let total_estimated = 0;
     try {
-      const [cRows] = await conn.execute(`SELECT COUNT(*) AS n FROM (${cfg.query}) __dc_count`) as [any[], any];
+      const countSql = `SELECT COUNT(*) AS n FROM ${quoteMyIdent(cfg.table)}`;
+      const [cRows] = await conn.execute(countSql) as [any[], any];
       total_estimated = Number(cRows[0]?.n ?? 0);
     } catch { /* count failed, not critical */ }
 
@@ -72,7 +107,8 @@ export async function fetchMySQLContacts(cfg: MySQLConfig): Promise<SyncContact[
     user: cfg.user, password: cfg.password, database: cfg.database,
   });
   try {
-    const [rows] = await conn.execute(cfg.query) as [any[], any];
+    const sql = buildSafeSelect(cfg);
+    const [rows] = await conn.execute(sql) as [any[], any];
     return (rows as any[]).map(r => mapRow(r, cfg)).filter(c => c.phone);
   } finally {
     conn.end();
@@ -88,13 +124,6 @@ function mapRow(row: any, cfg: MySQLConfig): SyncContact {
   if (cfg.action_date_column && row[cfg.action_date_column] != null)
     out.action_key_last_at = String(row[cfg.action_date_column]);
   return out;
-}
-
-/** Wraps a query to add LIMIT without duplicating existing LIMIT */
-function wrapLimit(query: string, limit: number): string {
-  const q = query.trim().replace(/;$/, '');
-  if (/\bLIMIT\s+\d+/i.test(q)) return q;
-  return `${q} LIMIT ${limit}`;
 }
 
 function formatPhone(raw: any): string {

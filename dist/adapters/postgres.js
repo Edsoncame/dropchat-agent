@@ -1,10 +1,47 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.validateIdentifier = validateIdentifier;
+exports.quoteIdent = quoteIdent;
 exports.createPool = createPool;
 exports.testConnection = testConnection;
 exports.getColumns = getColumns;
 exports.fetchRows = fetchRows;
 const pg_1 = require("pg");
+/**
+ * Valida que un nombre de tabla/columna sea un identificador SQL "safe":
+ * - solo letras (a-z A-Z), números, guion bajo
+ * - no empieza con número
+ * - máximo 63 caracteres (límite NAMEDATALEN de Postgres)
+ *
+ * Lanza Error si no es válido. NO devuelve el identificador entrecomillado;
+ * solo lo valida. El llamador debe usar `quoteIdent()` para envolverlo.
+ */
+function validateIdentifier(name, label = 'identifier') {
+    if (!name || typeof name !== 'string') {
+        throw new Error(`${label} requerido`);
+    }
+    // Permitimos opcional schema.table → validar cada parte
+    const parts = name.split('.');
+    if (parts.length > 2) {
+        throw new Error(`${label} inválido: demasiados puntos en "${name}"`);
+    }
+    for (const part of parts) {
+        if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(part)) {
+            throw new Error(`${label} inválido: "${part}". Solo letras, números y guiones bajos. Sin espacios ni caracteres especiales.`);
+        }
+    }
+    return name;
+}
+/**
+ * Envuelve un identificador en comillas dobles, escapando cualquier comilla
+ * doble interna (Postgres y MySQL ANSI mode aceptan esto).
+ * Combinado con validateIdentifier() previene SQL injection en nombres.
+ */
+function quoteIdent(name) {
+    validateIdentifier(name, 'identifier');
+    // Soportar schema.table → "schema"."table"
+    return name.split('.').map(p => `"${p.replace(/"/g, '""')}"`).join('.');
+}
 let _pool = null;
 function createPool(cfg) {
     _pool = new pg_1.Pool({
@@ -35,8 +72,11 @@ async function testConnection(cfg) {
     }
 }
 async function getColumns(cfg, table) {
+    validateIdentifier(table, 'tabla');
     const pool = createPool(cfg);
     try {
+        // information_schema acepta el nombre como string parametrizado (no es un identifier
+        // dentro de FROM, así que es safe usar $1 acá).
         const { rows } = await pool.query(`SELECT column_name FROM information_schema.columns
        WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position`, [table]);
         return rows.map((r) => r.column_name);
@@ -46,11 +86,21 @@ async function getColumns(cfg, table) {
     }
 }
 async function fetchRows(pool, table, mapping, sinceColumn, sinceValue) {
-    const cols = Object.values(mapping).filter(Boolean).join(', ');
-    let query = `SELECT ${cols} FROM ${table}`;
+    // Anti-SQLi: validar TODOS los identificadores antes de interpolar.
+    validateIdentifier(table, 'tabla');
+    const colValues = Object.values(mapping)
+        .filter((v) => typeof v === 'string' && v.length > 0);
+    for (const c of colValues)
+        validateIdentifier(c, 'columna');
+    if (sinceColumn)
+        validateIdentifier(sinceColumn, 'sinceColumn');
+    // Quoting con comillas dobles para los identificadores.
+    const quotedCols = colValues.map(quoteIdent).join(', ');
+    const quotedTable = quoteIdent(table);
+    let query = `SELECT ${quotedCols} FROM ${quotedTable}`;
     const params = [];
     if (sinceColumn && sinceValue) {
-        query += ` WHERE ${sinceColumn} > $1`;
+        query += ` WHERE ${quoteIdent(sinceColumn)} > $1`;
         params.push(sinceValue);
     }
     query += ' LIMIT 500';

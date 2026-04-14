@@ -1,6 +1,6 @@
 {
   "name": "dropchat-agent",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Drop Chat Sync Agent — conecta tu base de datos con Drop Chat sin exponer credenciales",
   "main": "dist/index.js",
   "bin": {

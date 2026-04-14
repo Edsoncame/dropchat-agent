@@ -7,6 +7,42 @@ exports.testMySQLConnection = testMySQLConnection;
 exports.previewMySQLQuery = previewMySQLQuery;
 exports.fetchMySQLContacts = fetchMySQLContacts;
 const promise_1 = __importDefault(require("mysql2/promise"));
+const postgres_1 = require("./postgres");
+/** Quoting de identificadores para MySQL: usa backticks y escapa los internos. */
+function quoteMyIdent(name) {
+    (0, postgres_1.validateIdentifier)(name, 'identifier');
+    return name.split('.').map(p => '`' + p.replace(/`/g, '``') + '`').join('.');
+}
+/** Construye un SELECT seguro a partir de tabla + columnas validadas. */
+function buildSafeSelect(cfg, limit) {
+    (0, postgres_1.validateIdentifier)(cfg.table, 'tabla');
+    (0, postgres_1.validateIdentifier)(cfg.phone_column, 'phone_column');
+    const cols = [quoteMyIdent(cfg.phone_column)];
+    if (cfg.name_column) {
+        (0, postgres_1.validateIdentifier)(cfg.name_column, 'name_column');
+        cols.push(quoteMyIdent(cfg.name_column));
+    }
+    if (cfg.email_column) {
+        (0, postgres_1.validateIdentifier)(cfg.email_column, 'email_column');
+        cols.push(quoteMyIdent(cfg.email_column));
+    }
+    if (cfg.action_column) {
+        (0, postgres_1.validateIdentifier)(cfg.action_column, 'action_column');
+        cols.push(quoteMyIdent(cfg.action_column));
+    }
+    if (cfg.action_date_column) {
+        (0, postgres_1.validateIdentifier)(cfg.action_date_column, 'action_date_column');
+        cols.push(quoteMyIdent(cfg.action_date_column));
+    }
+    let sql = `SELECT ${cols.join(', ')} FROM ${quoteMyIdent(cfg.table)}`;
+    if (limit && Number.isInteger(limit) && limit > 0 && limit <= 10000) {
+        sql += ` LIMIT ${limit}`;
+    }
+    else {
+        sql += ` LIMIT 500`;
+    }
+    return sql;
+}
 async function testMySQLConnection(cfg) {
     let conn;
     const t0 = Date.now();
@@ -35,13 +71,13 @@ async function previewMySQLQuery(cfg, limit = 5) {
         user: cfg.user, password: cfg.password, database: cfg.database,
     });
     try {
-        // Preview query with LIMIT
-        const limitedQuery = wrapLimit(cfg.query, limit);
-        const [rows] = await conn.execute(limitedQuery);
-        // Estimate total (run COUNT wrapper)
+        const sql = buildSafeSelect(cfg, limit);
+        const [rows] = await conn.execute(sql);
+        // Estimate total con COUNT sobre la tabla validada
         let total_estimated = 0;
         try {
-            const [cRows] = await conn.execute(`SELECT COUNT(*) AS n FROM (${cfg.query}) __dc_count`);
+            const countSql = `SELECT COUNT(*) AS n FROM ${quoteMyIdent(cfg.table)}`;
+            const [cRows] = await conn.execute(countSql);
             total_estimated = Number(cRows[0]?.n ?? 0);
         }
         catch { /* count failed, not critical */ }
@@ -57,7 +93,8 @@ async function fetchMySQLContacts(cfg) {
         user: cfg.user, password: cfg.password, database: cfg.database,
     });
     try {
-        const [rows] = await conn.execute(cfg.query);
+        const sql = buildSafeSelect(cfg);
+        const [rows] = await conn.execute(sql);
         return rows.map(r => mapRow(r, cfg)).filter(c => c.phone);
     }
     finally {
@@ -75,13 +112,6 @@ function mapRow(row, cfg) {
     if (cfg.action_date_column && row[cfg.action_date_column] != null)
         out.action_key_last_at = String(row[cfg.action_date_column]);
     return out;
-}
-/** Wraps a query to add LIMIT without duplicating existing LIMIT */
-function wrapLimit(query, limit) {
-    const q = query.trim().replace(/;$/, '');
-    if (/\bLIMIT\s+\d+/i.test(q))
-        return q;
-    return `${q} LIMIT ${limit}`;
 }
 function formatPhone(raw) {
     if (!raw)

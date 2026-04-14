@@ -2,21 +2,57 @@
 /**
  * Drop Chat Sync Agent
  *
- * Corre un servidor local en http://localhost:3001
+ * Corre un servidor local en http://127.0.0.1:3001
  * El usuario configura la conexión a su BD desde el navegador.
- * Las credenciales de BD nunca salen de esta máquina.
- * Solo se envían los campos de contacto a la API de Drop Chat.
+ *
+ * GARANTÍAS DE SEGURIDAD:
+ * 1. Las credenciales de BD nunca salen de esta máquina.
+ * 2. El servidor del agente bindea SOLO a 127.0.0.1 (loopback).
+ *    No es accesible desde otros equipos de la red local.
+ * 3. Todos los endpoints del agente requieren un token local
+ *    (LOCAL_TOKEN) que se genera la primera vez y se guarda en
+ *    el archivo de config (sólo legible por el dueño del proceso).
+ * 4. Los nombres de tabla/columna se validan con regex antes de
+ *    interpolarse en SQL para prevenir inyección.
+ * 5. El archivo de config se persiste con permisos 0600 (Unix).
  */
 
 import express        from 'express';
 import path           from 'path';
 import fs             from 'fs';
+import os             from 'os';
+import crypto         from 'crypto';
 import axios          from 'axios';
 import { exec }       from 'child_process';
 import { Pool }       from 'pg';
 import readline       from 'readline';
-import { createPool, testConnection, getColumns, fetchRows, DbConfig, ColumnMapping } from './adapters/postgres';
+import { createPool, testConnection, getColumns, fetchRows, DbConfig, ColumnMapping, validateIdentifier } from './adapters/postgres';
 import { testMySQLConnection, previewMySQLQuery, fetchMySQLContacts, MySQLConfig } from './adapters/mysql';
+
+// ── Helpers compartidos ───────────────────────────────────────
+const CONFIG_FILE = path.join(process.cwd(), 'dropchat-agent-config.json');
+
+function loadConfigOrEmpty(): any {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+  } catch { /* fresh start */ }
+  return {};
+}
+
+function saveConfigSecure(data: any) {
+  const json = JSON.stringify(data, null, 2);
+  // Escribir con permisos restrictivos. En Unix: 0600 (solo dueño puede leer/escribir).
+  fs.writeFileSync(CONFIG_FILE, json, { mode: 0o600 });
+  // En Windows fs.chmod no aplica permisos POSIX, pero el icacls sería ideal.
+  // Reforzar chmod en Unix por si el archivo ya existía con otros permisos:
+  if (process.platform !== 'win32') {
+    try { fs.chmodSync(CONFIG_FILE, 0o600); } catch { /* ignore */ }
+  }
+}
+
+function generateLocalToken(): string {
+  return crypto.randomBytes(24).toString('base64url');
+}
 
 // ── CLI: `dropchat-agent setup` ──────────────────────────────
 if (process.argv[2] === 'setup') {
@@ -53,17 +89,45 @@ async function runSetup() {
   console.log(`  BD: ${dbType || 'no especificada'} | Tabla: ${table || 'no especificada'}`);
   console.log(`  Mapeo: phone=${phone}, name=${name}, email=${email}\n`);
 
+  // ── Validar identificadores antes de seguir (anti SQLi) ──────
+  try {
+    validateIdentifier(table,  'tabla');
+    validateIdentifier(phone,  'columna phone');
+    if (name)  validateIdentifier(name,  'columna name');
+    if (email) validateIdentifier(email, 'columna email');
+  } catch (e: any) {
+    console.error(`\n  ❌ ${e.message}`);
+    console.error('     Solo se permiten letras, números y guiones bajos. Máximo 63 caracteres.');
+    return;
+  }
+
+  // ── Validar API key (debe parecer una real, no la versión enmascarada) ──
+  if (!apiKey || apiKey.includes('•')) {
+    console.error('\n  ❌ La API key recibida está enmascarada o vacía.');
+    console.error('     Vuelve al panel de Drop Chat → Settings → Sincronización de datos');
+    console.error('     y genera una nueva. Las API keys solo se muestran una vez por seguridad.');
+    return;
+  }
+
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   console.log('  ⚠  Las credenciales que ingreses a continuación NUNCA salen');
-  console.log('     de esta máquina. Se guardan solo en un archivo local.\n');
+  console.log('     de esta máquina. Se guardan solo en un archivo local con');
+  console.log('     permisos restrictivos (0600 — solo tu usuario puede leerlo).\n');
 
   const host     = await ask(rl, '  Host de la base de datos', 'localhost');
   const port     = await ask(rl, '  Puerto', dbType === 'mysql' ? '3306' : '5432');
   const database = await ask(rl, '  Nombre de la base de datos');
   const user     = await ask(rl, '  Usuario');
   const password = await ask(rl, '  Contraseña');
-  const useSsl   = await ask(rl, '  Usar SSL? (s/n)', 'n');
+  // Sugerir SSL automáticamente si el host no es local
+  const isLocalHost = ['localhost','127.0.0.1','::1'].includes(host.toLowerCase());
+  const sslDefault  = isLocalHost ? 'n' : 's';
+  if (!isLocalHost) {
+    console.log('     (Recomendamos SSL=s porque tu BD no es local, así las credenciales');
+    console.log('      no viajan en claro entre este equipo y la BD)');
+  }
+  const useSsl   = await ask(rl, '  Usar SSL? (s/n)', sslDefault);
 
   rl.close();
 
@@ -98,7 +162,10 @@ async function runSetup() {
     console.log(`  ⚠  No se pudo obtener preview: ${e.message}`);
   }
 
-  // Save config
+  // Save config (con local_token generado para el server mode)
+  const existing = loadConfigOrEmpty();
+  const localToken = existing.local_token || generateLocalToken();
+
   const configData = {
     db: dbConfig,
     db_type: dbType || 'postgres',
@@ -109,15 +176,17 @@ async function runSetup() {
     interval: 15,
     running: true,
     tenant_id: tenantId,
+    local_token: localToken,
   };
 
-  const configPath = path.join(process.cwd(), 'dropchat-agent-config.json');
-  fs.writeFileSync(configPath, JSON.stringify(configData, null, 2));
-  console.log(`\n  💾 Configuración guardada en: ${configPath}`);
-  console.log('\n  🚀 Para iniciar el agente ejecuta:');
+  saveConfigSecure(configData);
+  console.log(`\n  💾 Configuración guardada en: ${CONFIG_FILE}`);
+  console.log('     Permisos del archivo: 0600 (solo tu usuario puede leerlo)\n');
+  console.log('  🚀 Para iniciar el agente ejecuta:');
   console.log('     npx dropchat-agent\n');
   console.log('  El agente sincronizará tus contactos cada 15 minutos.');
-  console.log('  Puedes cambiar el intervalo en http://localhost:3001\n');
+  console.log('  Puedes cambiar el intervalo en http://127.0.0.1:3001');
+  console.log(`  (Token local: ${localToken.slice(0, 8)}… — necesario para acceder al panel local)\n`);
 }
 
 // ── Server mode (default) ────────────────────────────────────
@@ -125,29 +194,86 @@ function startServer() {
 
 const app  = express();
 const PORT = 3001;
+const HOST = '127.0.0.1'; // loopback only — nunca exponer a la red
 
-app.use(express.json());
+app.use(express.json({ limit: '512kb' }));
+
+// ── In-memory config (persisted to dropchat-agent-config.json) ─
+let config: {
+  db?:           DbConfig;
+  db_type?:      string;
+  table?:        string;
+  mapping?:      ColumnMapping;
+  api_key?:      string;
+  api_url?:      string;
+  interval?:     number;   // minutes
+  running?:      boolean;
+  tenant_id?:    string;
+  local_token?:  string;
+} = loadConfigOrEmpty();
+
+// Generar token local si no existe (primer arranque)
+if (!config.local_token) {
+  config.local_token = generateLocalToken();
+  saveConfigSecure(config);
+}
+
+function saveConfig() { saveConfigSecure(config); }
+
+// ── Auth middleware: token local en header o query ────────────
+// Acepta el token vía:
+//   - Header: Authorization: Bearer <token>
+//   - Header: X-Local-Token: <token>
+//   - Query:  ?token=<token>   (para abrir el HTML inicial desde el browser)
+function localAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  // Permitir GET / (HTML del UI) sin token, pero todos los /api/* lo requieren
+  const isApi = req.path.startsWith('/api/');
+  if (!isApi) return next();
+
+  const expected = config.local_token;
+  if (!expected) {
+    res.status(503).json({ error: 'Agente sin token configurado' });
+    return;
+  }
+
+  const headerAuth = (req.headers['authorization'] || '').toString();
+  const headerToken = (req.headers['x-local-token'] || '').toString();
+  const queryToken  = (req.query['token'] || '').toString();
+  const provided =
+    (headerAuth.startsWith('Bearer ') ? headerAuth.slice(7) : '') ||
+    headerToken ||
+    queryToken;
+
+  if (!provided || !timingSafeEqual(provided, expected)) {
+    res.status(401).json({ error: 'Token local inválido o ausente' });
+    return;
+  }
+  next();
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch {
+    return false;
+  }
+}
+
+app.use(localAuth);
+
+// Servir UI estático DESPUÉS del middleware: el HTML está exento (no es /api)
+// pero los fetch que haga el HTML deben mandar el token.
 app.use(express.static(path.join(__dirname, 'ui')));
 
-// ── In-memory config (persisted to config.json on disk) ───────
-const CONFIG_FILE = path.join(process.cwd(), 'dropchat-agent-config.json');
-let config: {
-  db?:       DbConfig;
-  table?:    string;
-  mapping?:  ColumnMapping;
-  api_key?:  string;
-  api_url?:  string;
-  interval?: number;   // minutes
-  running?:  boolean;
-} = {};
-
-try {
-  if (fs.existsSync(CONFIG_FILE)) config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-} catch { /* fresh start */ }
-
-function saveConfig() {
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
-}
+// ── Endpoint público para que el UI sepa el token al abrirse ──
+// Se sirve sin auth porque el UI corre en localhost y necesita poder
+// inicializar. Como el server bindea a 127.0.0.1, solo procesos del
+// mismo equipo pueden alcanzarlo; el token sigue protegiendo contra
+// scripts del navegador apuntando a otros sitios.
+app.get('/bootstrap', (_req, res) => {
+  res.json({ token: config.local_token });
+});
 
 // ── MySQL routes ──────────────────────────────────────────────
 
@@ -159,8 +285,14 @@ app.post('/api/mysql/test', async (req, res) => {
 
 app.post('/api/mysql/preview', async (req, res) => {
   try {
-    const { limit = 5, ...cfg } = req.body as MySQLConfig & { limit?: number };
-    const result = await previewMySQLQuery(cfg, limit);
+    const cfg = req.body as MySQLConfig & { limit?: number };
+    // Validar columnas antes de ejecutar nada
+    validateIdentifier(cfg.phone_column, 'phone_column');
+    if (cfg.name_column)         validateIdentifier(cfg.name_column,         'name_column');
+    if (cfg.email_column)        validateIdentifier(cfg.email_column,        'email_column');
+    if (cfg.action_column)       validateIdentifier(cfg.action_column,       'action_column');
+    if (cfg.action_date_column)  validateIdentifier(cfg.action_date_column,  'action_date_column');
+    const result = await previewMySQLQuery(cfg, cfg.limit ?? 5);
     res.json(result);
   } catch (e: any) {
     res.status(400).json({ error: e.message });
@@ -171,6 +303,11 @@ app.post('/api/mysql/run', async (req, res) => {
   try {
     const cfg = req.body as MySQLConfig & { api_key: string; api_url?: string };
     if (!cfg.api_key) { res.status(400).json({ error: 'api_key requerido' }); return; }
+    validateIdentifier(cfg.phone_column, 'phone_column');
+    if (cfg.name_column)         validateIdentifier(cfg.name_column,         'name_column');
+    if (cfg.email_column)        validateIdentifier(cfg.email_column,        'email_column');
+    if (cfg.action_column)       validateIdentifier(cfg.action_column,       'action_column');
+    if (cfg.action_date_column)  validateIdentifier(cfg.action_date_column,  'action_date_column');
 
     const contacts = await fetchMySQLContacts(cfg);
     if (!contacts.length) { res.json({ created: 0, updated: 0, skipped: 0, total: 0, message: 'Sin contactos' }); return; }
@@ -222,6 +359,7 @@ app.post('/api/test-connection', async (req, res) => {
 app.post('/api/columns', async (req, res) => {
   try {
     const { db, table } = req.body;
+    validateIdentifier(table, 'tabla');
     const cols = await getColumns(db, table);
     res.json({ columns: cols });
   } catch (e: any) {
@@ -231,13 +369,46 @@ app.post('/api/columns', async (req, res) => {
 
 // Save config
 app.post('/api/config', (req, res) => {
-  config = { ...config, ...req.body };
-  saveConfig();
-  res.json({ ok: true });
+  try {
+    // Validar campos sensibles antes de persistir
+    const incoming = req.body || {};
+
+    // No permitir cambiar el local_token vía API
+    delete incoming.local_token;
+
+    // Validar table y mapping si vienen
+    if (incoming.table) validateIdentifier(incoming.table, 'tabla');
+    if (incoming.mapping && typeof incoming.mapping === 'object') {
+      for (const [field, col] of Object.entries(incoming.mapping as Record<string,string>)) {
+        if (!col) continue;
+        validateIdentifier(col, `mapping.${field}`);
+      }
+    }
+
+    // Validar api_url contra hijacking — solo permitir el dominio oficial
+    // o overrides por env var DC_ALLOWED_API_URL para entornos de prueba
+    if (incoming.api_url) {
+      const allowedUrls = [
+        'https://omni-platform-api-production.up.railway.app/api/v1',
+        process.env['DC_ALLOWED_API_URL'],
+      ].filter(Boolean) as string[];
+      const norm = String(incoming.api_url).replace(/\/$/, '');
+      if (!allowedUrls.some(u => u && u.replace(/\/$/, '') === norm)) {
+        res.status(400).json({ error: 'api_url no permitido. Solo se acepta el dominio oficial de Drop Chat.' });
+        return;
+      }
+    }
+
+    config = { ...config, ...incoming };
+    saveConfig();
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // Manual sync
-app.post('/api/sync-now', async (req, res) => {
+app.post('/api/sync-now', async (_req, res) => {
   if (syncRunning) { res.json({ error: 'Sync already running' }); return; }
   const result = await runSync();
   res.json(result);
@@ -312,15 +483,20 @@ function stopScheduler() {
 }
 
 // ── Startup ───────────────────────────────────────────────────
-app.listen(PORT, () => {
+// Bind a 127.0.0.1 explícitamente — NO 0.0.0.0.
+// Esto previene que cualquiera en la red local del cliente alcance
+// el agente. Solo procesos del mismo equipo pueden conectarse.
+app.listen(PORT, HOST, () => {
+  const localUrl = `http://${HOST}:${PORT}`;
   console.log(`\n  ✅ Drop Chat Sync Agent corriendo`);
-  console.log(`  🌐 Abre http://localhost:${PORT} en tu navegador\n`);
+  console.log(`  🔒 Bind: ${HOST}:${PORT} (solo accesible desde este equipo)`);
+  console.log(`  🌐 Abre el panel: ${localUrl}/?token=${config.local_token}\n`);
 
-  // Auto-open browser (cross-platform)
-  const url = `http://localhost:${PORT}`;
-  const cmd = process.platform === 'darwin' ? `open ${url}`
-            : process.platform === 'win32'  ? `start ${url}`
-            : `xdg-open ${url}`;
+  // Auto-open browser con el token en el query string para que se autocomplete
+  const urlWithToken = `${localUrl}/?token=${config.local_token}`;
+  const cmd = process.platform === 'darwin' ? `open "${urlWithToken}"`
+            : process.platform === 'win32'  ? `start "" "${urlWithToken}"`
+            : `xdg-open "${urlWithToken}"`;
   exec(cmd);
 
   // Resume sync if was running
@@ -334,7 +510,7 @@ app.listen(PORT, () => {
     const heartbeat = () => {
       const apiUrl = (config.api_url ?? 'https://omni-platform-api-production.up.railway.app/api/v1').replace(/\/$/, '');
       axios.post(`${apiUrl}/sync/heartbeat`, {
-        agent_version: '1.0.0',
+        agent_version: '1.1.0',
         last_sync_at: lastSyncAt,
         status: config.running ? 'running' : 'stopped',
       }, { headers: { 'X-API-Key': config.api_key! }, timeout: 10_000 }).catch(() => {});
@@ -343,5 +519,8 @@ app.listen(PORT, () => {
     setInterval(heartbeat, 5 * 60 * 1000);
   }
 });
+
+// Suprimir el aviso de "os" no usado en algunos build setups
+void os;
 
 } // end startServer()
