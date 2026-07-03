@@ -297,7 +297,13 @@ function startServer() {
     app.use(localAuth);
     // Servir UI estático DESPUÉS del middleware: el HTML está exento (no es /api)
     // pero los fetch que haga el HTML deben mandar el token.
-    app.use(express_1.default.static(path_1.default.join(__dirname, 'ui')));
+    // UI: en dev __dirname=src/ y src/ui existe; instalado (dist/) el build copia
+    // src/ui → dist/ui. Fallback a src/ui por si un build viejo no la copió
+    // (item 9/50: la UI daba 404 en modo instalado).
+    const uiDir = fs_1.default.existsSync(path_1.default.join(__dirname, 'ui'))
+        ? path_1.default.join(__dirname, 'ui')
+        : path_1.default.join(__dirname, '../src/ui');
+    app.use(express_1.default.static(uiDir));
     // ── Endpoint público para que el UI sepa el token al abrirse ──
     // Se sirve sin auth porque el UI corre en localhost y necesita poder
     // inicializar. Como el server bindea a 127.0.0.1, solo procesos del

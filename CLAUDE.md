@@ -8,7 +8,7 @@
 
 - **Propósito:** leer datos desde la BD del cliente (Postgres/MySQL) y mandarlos a Drop Chat SaaS sin que las credenciales salgan de su servidor
 - **Version actual:** 1.1.0 (hardenizado 2026-04-14)
-- **Stack:** TypeScript + Express 4 + `pg` + `mysql2` + `axios` + `chokidar`
+- **Stack:** TypeScript + Express 4 + `pg` + `mysql2` + `axios`
 - **Distribution:** `npx github:Edsoncame/dropchat-agent setup --db-type=...`
 - **Repo GitHub:** `Edsoncame/dropchat-agent`
 
